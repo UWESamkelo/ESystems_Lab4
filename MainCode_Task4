@@ -1,0 +1,115 @@
+/* Title: Time Management and Analog Signals
+Author: Samkelo Mareka
+Date: 24/02/2026
+Student ID: 24004894
+*/
+
+
+#include "mbed.h"
+
+// Hardware Definitions
+AnalogIn pot(A0);           // Potentiometer for dynamic threshold
+AnalogIn tempSensor(A1);    // LM35 Temperature sensor
+DigitalIn gasSensor(PE_12); // MQ-2 Gas Sensor DOUT pin
+DigitalOut buzzer(PE_10);   // Buzzer positive pin
+
+// System States for Finite State Machine
+typedef enum {
+    STATE_NORMAL,
+    STATE_ALARM
+} SystemState_t;
+
+SystemState_t currentState = STATE_NORMAL;
+
+// Timer for non-blocking polling loops
+Timer eventTimer;
+
+// Counter to manage the different blinking speeds and serial print delays
+int loopCounter = 0; 
+
+int main() {
+    eventTimer.start();
+    buzzer = 0; // Ensure buzzer is explicitly off at initialization
+
+    while (true) {
+        // Execute evaluations every 100 ms
+        // (100,000 microseconds) to allow for the fastest required blink rate
+        if (eventTimer.elapsed_time().count() >= 100000) {
+            eventTimer.reset();
+            loopCounter++;
+
+            // 1. Read and Scale Data
+            // Map potentiometer reading to a 0-100 threshold
+            float thresholdFloat = pot.read() * 100.0f;
+            int thresholdWhole = (int)thresholdFloat;
+
+            // LM35 provides 10mV / degree Celsius. 
+            // Analog read is scaled 0.0 - 1.0, representing 0 - 3.3V
+            float tempFloat = tempSensor.read() * 330.0f;
+            
+            // Bypass float formatters: extract whole and decimal values
+            int tempWhole = (int)tempFloat;
+            int tempDec = (int)((tempFloat - tempWhole) * 100);
+
+            // MQ-2 DOUT is active low: provides 0V when gas is detected
+            bool isGasDetected = (gasSensor.read() == 0);
+            
+            // Check if temperature exceeds dynamically mapped threshold
+            bool isTempHigh = (tempWhole > thresholdWhole); 
+
+            // 2. Finite State Machine Evaluation
+            switch (currentState) {
+                case STATE_NORMAL:
+                    if (isTempHigh || isGasDetected) {
+                        currentState = STATE_ALARM;
+                    }
+                    break;
+
+                case STATE_ALARM:
+                    if (!isTempHigh && !isGasDetected) {
+                        currentState = STATE_NORMAL;
+                        buzzer = 0; // Ensure buzzer is off when returning to normal
+                        loopCounter = 0; // Reset counter
+                    }
+                    break;
+            }
+
+            // 3. Buzzer Blinking Logic (Evaluated every 100ms)
+            if (currentState == STATE_ALARM) {
+                if (isTempHigh && isGasDetected) {
+                    buzzer = !buzzer; // Toggle every 100ms
+                } else if (isTempHigh) {
+                    // Toggle every 500ms (every 5th loop)
+                    if (loopCounter % 5 == 0) buzzer = !buzzer; 
+                } else if (isGasDetected) {
+                    // Toggle every 1000ms (every 10th loop)
+                    if (loopCounter % 10 == 0) buzzer = !buzzer; 
+                }
+            } else {
+                buzzer = 0;
+            }
+
+            // 4. Serial Monitor Output 
+            // Print only every 500ms to keep terminal readable
+            if (loopCounter % 5 == 0) {
+                if (currentState == STATE_NORMAL) {
+                    printf("System Normal\r\n");
+                } else {
+                    printf("Buzzer ON - Cause: ");
+                    if (isTempHigh && isGasDetected) {
+                        printf("Temperature & Gas\r\n");
+                    } else if (isTempHigh) {
+                        printf("Temperature\r\n");
+                    } else {
+                        printf("Gas\r\n");
+                    }
+                }
+
+                // Display formatted string utilizing the integer-cast values
+                printf("Live Readings -> Threshold: %d | Temp: %d.%02d C | Gas: %s\r\n",
+                       thresholdWhole, tempWhole, tempDec, (isGasDetected ? "DETECTED" : "CLEAR"));
+                printf("--------------------------------------------------\r\n");
+            }
+        }
+    }
+}
